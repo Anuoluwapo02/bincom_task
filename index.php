@@ -1,67 +1,51 @@
 <?php
+include('../db_connect.php');
 
-include('../db_connect.php'); 
+// Fetch all LGAs
+$lga_query = $conn->query("SELECT lga_id, lga_name FROM lga ORDER BY lga_name");
 
-$message = "";
 $result_output = "";
+$message = "";
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['lga_id'])) {
+    $lga_id = (int) $_POST['lga_id'];
 
-$polling_units = $conn->query("SELECT polling_unit_id, polling_unit_name FROM polling_unit ORDER BY polling_unit_name");
+    if ($lga_id > 0) {
+        $sql = "
+            SELECT apr.party_abbreviation, SUM(apr.party_score) AS total_score
+            FROM announced_pu_results apr
+            INNER JOIN polling_unit pu ON apr.polling_unit_id = pu.polling_unit_id
+            WHERE pu.lga_id = ?
+            GROUP BY apr.party_abbreviation
+            ORDER BY total_score DESC
+        ";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("i", $lga_id);
+        $stmt->execute();
+        $res = $stmt->get_result();
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $polling_unit_id = isset($_POST['polling_unit_id']) ? (int) $_POST['polling_unit_id'] : 0;
-    $party_abbr = $_POST['party_abbreviation'] ?? [];
-    $party_score = $_POST['party_score'] ?? [];
+        if ($res->num_rows > 0) {
+            $nameStmt = $conn->prepare("SELECT lga_name FROM lga WHERE lga_id = ?");
+            $nameStmt->bind_param("i", $lga_id);
+            $nameStmt->execute();
+            $lga_name = $nameStmt->get_result()->fetch_assoc()['lga_name'] ?? 'Selected LGA';
+            $nameStmt->close();
 
-  
-    $valid_rows = 0;
-    for ($i = 0; $i < count($party_abbr); $i++) {
-        if (trim($party_abbr[$i]) !== "") {
-            $valid_rows++;
-        }
-    }
+            $result_output .= "<h3>Total Votes by Party for <u>$lga_name</u></h3>";
+            $result_output .= "<table><thead><tr><th>Party</th><th>Total Votes</th></tr></thead><tbody>";
 
-    if ($polling_unit_id > 0 && $valid_rows > 0) {
-        $stmt = $conn->prepare("INSERT INTO announced_pu_results (polling_unit_id, party_abbreviation, party_score) VALUES (?, ?, ?)");
-        if (!$stmt) {
-            $message = "<div class='error'>Database error: failed to prepare insert statement.</div>";
+            while ($row = $res->fetch_assoc()) {
+                $result_output .= "<tr><td>{$row['party_abbreviation']}</td><td>" . number_format($row['total_score']) . "</td></tr>";
+            }
+
+            $result_output .= "</tbody></table>";
         } else {
-            $success = true;
-            for ($i = 0; $i < count($party_abbr); $i++) {
-                $abbr = trim($party_abbr[$i]);
-                $score = isset($party_score[$i]) && is_numeric($party_score[$i]) ? (int)$party_score[$i] : 0;
-
-                if ($abbr !== "") {
-                    $stmt->bind_param("isi", $polling_unit_id, $abbr, $score);
-                    if (!$stmt->execute()) {
-                        $success = false;
-                        break;
-                    }
-                }
-            }
-
-            if ($success) {
-                $puName = "Selected Polling Unit";
-                $puRes = $conn->prepare("SELECT polling_unit_name FROM polling_unit WHERE polling_unit_id = ?");
-                if ($puRes) {
-                    $puRes->bind_param("i", $polling_unit_id);
-                    $puRes->execute();
-                    $r = $puRes->get_result()->fetch_assoc();
-                    if ($r && isset($r['polling_unit_name'])) $puName = $r['polling_unit_name'];
-                    $puRes->close();
-                }
-
-                $message = "<div class='success'>✅ Results added successfully for <strong>" . htmlspecialchars($puName) . "</strong>!</div>";
-                
-                $message .= "<p><a href=\"../q1/index.php\" target=\"_blank\">Open Polling Unit Results Viewer</a> — select the same polling unit to view newly added rows.</p>";
-            } else {
-                $message = "<div class='error'>❌ Something went wrong while inserting results. Please try again.</div>";
-            }
-
-            $stmt->close();
+            $message = "<div class='error'>⚠️ No results found for this LGA.</div>";
         }
+
+        $stmt->close();
     } else {
-        $message = "<div class='error'>⚠️ Please select a polling unit and provide at least one party name with a score.</div>";
+        $message = "<div class='error'>⚠️ Please select a valid LGA.</div>";
     }
 }
 ?>
@@ -69,77 +53,107 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Add New Polling Unit Results</title>
+  <title>LGA Total Results Viewer</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 40px; background: #f7f7f7; }
-    .container { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); max-width:800px; margin:auto; }
-    input, select, button { padding: 8px; margin: 5px 0; border: 1px solid #ccc; border-radius: 5px; }
-    .fullwidth { width: 100%; box-sizing: border-box; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { padding: 8px; text-align: left; border-bottom:1px solid #eee; }
-    .add-row { margin-top: 10px; background: #28a745; color: #fff; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; }
-    .remove-row { background: #dc3545; color: #fff; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; }
-    .success { background: #d4edda; color: #155724; padding: 10px; margin-top: 10px; border-radius: 5px; }
-    .error { background: #f8d7da; color: #721c24; padding: 10px; margin-top: 10px; border-radius: 5px; }
-    a { color: #007BFF; text-decoration: none; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #f2f4f8;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 800px;
+      margin: 40px auto;
+      background: #fff;
+      padding: 25px;
+      border-radius: 10px;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+    }
+    h2 {
+      text-align: center;
+      color: #157C57;
+      margin-bottom: 20px;
+    }
+    form {
+      text-align: center;
+      margin-bottom: 25px;
+    }
+    select, button {
+      padding: 10px 15px;
+      border-radius: 5px;
+      border: 1px solid #ccc;
+      font-size: 15px;
+    }
+    button {
+      background-color: #157C57;
+      color: white;
+      border: none;
+      cursor: pointer;
+      transition: 0.3s;
+    }
+    button:hover {
+      background-color: #0f5c40;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+    }
+    th {
+      background-color: #157C57;
+      color: white;
+      padding: 10px;
+      text-align: center;
+    }
+    td {
+      border: 1px solid #ddd;
+      padding: 10px;
+      text-align: center;
+    }
+    tr:nth-child(even) {
+      background-color: #f9f9f9;
+    }
+    .error {
+      background: #f8d7da;
+      color: #721c24;
+      padding: 10px;
+      border-radius: 5px;
+      margin-top: 10px;
+      text-align: center;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 30px;
+      font-size: 14px;
+      color: #666;
+    }
   </style>
-  <script>
-  
-    function addRow() {
-      const table = document.getElementById("partyTable");
-      const newRow = table.insertRow();
-      newRow.innerHTML = `
-        <td><input type="text" name="party_abbreviation[]" placeholder="Party (e.g. PDP)" required class="fullwidth"></td>
-        <td><input type="number" name="party_score[]" placeholder="Score" value="0" required class="fullwidth"></td>
-        <td><button type="button" class="remove-row" onclick="removeRow(this)">Remove</button></td>
-      `;
-    }
-
-    function removeRow(button) {
-      const row = button.parentElement.parentElement;
-      row.parentElement.removeChild(row);
-    }
-  </script>
 </head>
 <body>
-  <h2 style="text-align:center;">Add New Polling Unit Results</h2>
-
   <div class="container">
-    <form method="POST" action="">
-      <label for="polling_unit_id">Select Polling Unit:</label>
-      <select name="polling_unit_id" required class="fullwidth">
-        <option value="">-- Choose Polling Unit --</option>
-        <?php
-        if ($polling_units && $polling_units->num_rows) {
-            while($pu = $polling_units->fetch_assoc()) {
-                echo '<option value="'.(int)$pu['polling_unit_id'].'">'.htmlspecialchars($pu['polling_unit_name']).'</option>';
-            }
-        }
-        ?>
+    <h2>LGA Total Result Viewer</h2>
+
+    <form method="POST">
+      <label for="lga_id"><strong>Select Local Government:</strong></label><br><br>
+      <select name="lga_id" required>
+        <option value="">-- Choose LGA --</option>
+        <?php while($lga = $lga_query->fetch_assoc()) { ?>
+          <option value="<?php echo $lga['lga_id']; ?>" <?php if(isset($lga_id) && $lga_id == $lga['lga_id']) echo 'selected'; ?>>
+            <?php echo htmlspecialchars($lga['lga_name']); ?>
+          </option>
+        <?php } ?>
       </select>
-
-      <h3>Enter Party Results</h3>
-      <table id="partyTable">
-        <tr>
-          <th style="width:60%;">Party</th>
-          <th style="width:25%;">Score</th>
-          <th style="width:15%;">Action</th>
-        </tr>
-        <tr>
-          <td><input type="text" name="party_abbreviation[]" placeholder="Party (e.g. PDP)" required class="fullwidth"></td>
-          <td><input type="number" name="party_score[]" placeholder="Score" value="0" required class="fullwidth"></td>
-          <td><button type="button" class="remove-row" onclick="removeRow(this)">Remove</button></td>
-        </tr>
-      </table>
-
-      <button type="button" class="add-row" onclick="addRow()">+ Add Another Party</button>
-      <br><br>
-      <button type="submit">Save Results</button>
+      <button type="submit">View Total Results</button>
     </form>
 
     <?php
       echo $message;
+      echo $result_output;
     ?>
+
+    <div class="footer">
+      <p>Tip: Select an LGA to view total votes per party.</p>
+    </div>
   </div>
 </body>
 </html>
